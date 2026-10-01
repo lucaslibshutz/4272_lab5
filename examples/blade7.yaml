@@ -1,0 +1,45 @@
+# Blade 7 — 3-bladed, 7 in (0.1778 m) SLA-printed rotor, NACA 4412, U_inf = 15 m/s,
+# swept over rotor speed. Run:  uv run bem-blade run examples/blade7.yaml
+#
+# Geometry: data/Blade7_geometry.xlsx (r [m], pitch [deg], chord [m]). Its "pitch" convention
+#   (positive = leading edge upstream of the rotor plane) is PLAN.md §1's theta, used as-is.
+#   The geometry is exactly a Betz optimum (phi = atan(2/(3 lambda_r))) for TSR 4.469,
+#   design alpha 6.75 deg, B*Cl = 3.43 (=> Cl_design 1.14 for B = 3).
+# Material: Formlabs Grey Resin V4.1 TDS (25011042-TDS-ENUS), post-cured 30 min @ 60 C.
+
+airfoil:
+  naca: "4412"
+  polar_file: ../data/naca4412_neuralfoil.csv   # `bem-blade polar 4412 --re ...` (NeuralFoil)
+  alpha_stall_deg: 12.0                         # used only for the stall flag with a table
+
+rotor:
+  B: 3
+  R: 0.1778          # tip radius [m] = last station
+  r_hub: 0.0254      # blade/hub joint (first profile in the sheet)
+  pitch_deg: 0.0     # collective offset added on top of the sheet's pitch
+
+stations:
+  file: ../data/Blade7_geometry.xlsx
+
+operating:
+  U_inf: 15.0
+  rpm: [1000, 1250, 1500, 1750, 2000, 2250, 2500, 2750, 3000, 3250, 3500, 3750,
+        4000, 4250, 4500, 4750, 5000, 5250, 5500, 5750, 6000]
+  # design point: TSR 4.469 -> 3600 RPM at 15 m/s
+
+air:
+  rho: 1.225
+  mu: 1.81e-5
+
+structure:
+  model: solid
+  material:
+    E: 2.201e9                      # tensile modulus, post-cured (ASTM D638-14)
+    sigma_allow_tension: 47.0e6     # ultimate tensile strength, post-cured (ASTM D638-14)
+    sigma_allow_compression: 47.0e6 # NOT on the TDS; set = UTS (conservative for SLA resins)
+    density: 1180.0                 # NOT on the TDS; typical cured SLA resin [kg/m^3]
+  include_gravity: true
+  include_centrifugal: true
+
+output:
+  dir: results/blade7

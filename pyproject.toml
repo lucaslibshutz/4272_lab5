@@ -1,0 +1,38 @@
+[project]
+name = "bem-blade"
+version = "0.1.0"
+description = "Steady BEM blade loads, root bending moment and normal stress (JAX)"
+readme = "README.md"
+authors = [
+    { name = "Lucas Libshutz", email = "lsl94@cornell.edu" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "jax>=0.11.2",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.3",
+    "openpyxl>=3.1.5",
+    "pyyaml>=6.0.3",
+    "rich>=15.0.0",
+    "scipy>=1.18.1",
+]
+
+[project.optional-dependencies]
+neuralfoil = [
+    "neuralfoil>=0.3.3",
+]
+
+[project.scripts]
+bem-blade = "bem_blade.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.8.22,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

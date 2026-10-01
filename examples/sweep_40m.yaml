@@ -1,0 +1,20 @@
+# Envelope sweep (PLAN.md §8): same blade, constant TSR 7, U_inf from 4 to 14 m/s.
+# Reuses the single-point example and only changes the operating block.
+airfoil: {naca: "2412", alpha_stall_deg: 12.0}
+rotor: {B: 3, R: 40.0, r_hub: 2.0, pitch_deg: 0.0}
+stations:
+  r:         [2.000, 3.947, 5.895, 7.842, 9.789, 11.737, 13.684, 15.632, 17.579, 19.526,
+              21.474, 23.421, 25.368, 27.316, 29.263, 31.211, 33.158, 35.105, 37.053, 39.000]
+  chord:     [3.200, 3.200, 3.200, 3.200, 3.200, 3.200, 3.200, 3.200, 3.200, 3.200,
+              3.045, 2.813, 2.613, 2.438, 2.284, 2.148, 2.028, 1.919, 1.822, 1.734]
+  theta_deg: [20.000, 20.000, 20.000, 18.053, 14.183, 11.306, 9.110, 7.387, 6.005, 4.875,
+              3.934, 3.141, 2.463, 1.877, 1.366, 0.917, 0.519, 0.164, -0.155, -0.443]
+operating:
+  U_inf: [4, 6, 8, 10, 12, 14]
+  tsr: 7.0
+structure:
+  model: shell
+  skin_thickness: 0.02
+  material: {E: 40.0e9, sigma_allow_tension: 200.0e6, sigma_allow_compression: 150.0e6,
+             density: 1900.0}
+output: {dir: results/sweep_40m}
