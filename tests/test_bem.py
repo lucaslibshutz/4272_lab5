@@ -116,12 +116,13 @@ def test_sweep_equals_individual_runs(base_cfg):
         assert sweep["CP"][i] == pytest.approx(one["CP"][0], rel=1e-8)
 
 
-def test_blade7_example_runs():
+def test_blade7_bem_runs():
+    """Blade 7 under the momentum model (the example itself uses blade_element)."""
     cfg = load_config(ROOT / "examples" / "blade7.yaml",
-                      overrides=["operating.rpm=[2000, 3600, 5000]"])
+                      overrides=["operating.rpm=[2000, 3600, 5000]", "solver.model=bem"])
     res = run(cfg)
     o = res.out
     assert np.all(o["CP"] < 16 / 27)
     assert np.all(o["region"][:, 1:-1] == 1)  # r[0] = r_hub and r[-1] = R carry F = 0
-    # design point (TSR 4.47 ~ 3600 RPM) should be the best of the three
+    # 3600 RPM (TSR 4.47) should be the best of the three
     assert np.argmax(o["CP"]) == 1

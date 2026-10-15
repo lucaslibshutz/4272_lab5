@@ -51,13 +51,17 @@ def _header(res: Result, title: str | None) -> Panel:
     cfg, b = res.cfg, res.blade
     mat = cfg["structure"]["material"]
     U, W = res.U, rpm(res)
-    if len(U) == 1:
+    if res.freewheel:
+        op = "freewheel (Q = 0): " + ", ".join(f"U∞ = {u:g} m/s → Ω_ss = {w:.0f} RPM"
+                                                for u, w in zip(U, W))
+    elif len(U) == 1:
         op = f"U∞ = {U[0]:g} m/s · {W[0]:.0f} RPM · TSR {res.Omega[0] * b.rotor.R / U[0]:.2f}"
     else:
         span = lambda a, f: f"{f(a.min())}–{f(a.max())}" if np.ptp(a) > 0 else f(a[0])
         op = (f"U∞ = {span(U, lambda v: f'{v:g}')} m/s · {span(W, lambda v: f'{v:.0f}')} RPM "
               f"· {len(U)} operating points")
     aero = "fallback aero" if b.polar.kind == "fallback" else "polar table"
+    aero += " · blade element (no induction)" if b.model == "blade_element" else " · BEM"
     lines = Text.assemble(
         ("Rotor     ", "dim"), f"NACA {cfg['airfoil']['naca']} · B = {int(b.rotor.B)} · "
         f"R = {eng(b.rotor.R, 'm')} · r_hub = {eng(b.rotor.r_hub, 'm')} · {aero}\n",
@@ -238,6 +242,7 @@ NOTE_TEXT = {
     "no_bracket": "no BEM solution, loads set to 0",
     "residual": "BEM residual > 1e-6 (pole, not root)",
     "betz": "C_P above Betz: check inputs",
+    "betz_be": "C_P above Betz (expected: blade-element model has no induction)",
     "deflection": "tip deflection > 0.1 R",
 }
 SEVERE = {"no_bracket", "residual", "betz"}

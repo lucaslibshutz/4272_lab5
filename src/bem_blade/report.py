@@ -144,9 +144,13 @@ def write_outputs(res: Result, out_dir: str | Path, plots: bool = True) -> Path:
         name = f"stations_{op_label(res, i, file=True)}.csv" if sweep else "stations.csv"
         _write_csv(out_dir / name, station_rows(res, i), STATION_COLUMNS)
 
-    summary = {"operating_points": points, "re_passes": res.re_passes,
-               "warnings": res.warnings, "limitations": list(LIMITATIONS),
-               "config": res.cfg}
+    summary = {"model": res.blade.model, "operating_points": points,
+               "re_passes": res.re_passes, "warnings": res.warnings,
+               "limitations": list(LIMITATIONS), "config": res.cfg}
+    if res.freewheel:
+        summary["freewheel"] = [{"U_inf": float(u), "Omega_ss": float(om),
+                                 "rpm_ss": float(om * 60 / (2 * np.pi))}
+                                for u, om in zip(res.U, res.Omega)]
     if sweep:
         env = envelope(res)
         _write_csv(out_dir / "envelope.csv", env, list(env[0]))

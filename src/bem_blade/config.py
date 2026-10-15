@@ -42,7 +42,11 @@ DEFAULTS: dict[str, Any] = {
         "include_gravity": True,
         "include_centrifugal": True,
     },
-    "solver": {"re_tol": 0.01, "re_max_passes": 10},
+    # model: "bem" (momentum + induction, PLAN.md §5) or "blade_element" (lab handout: no
+    # induction, no tip/hub loss). freewheel_rpm = [min, max, step] scanned for Q(Omega) = 0
+    # when operating.rpm is "freewheel".
+    "solver": {"re_tol": 0.01, "re_max_passes": 10, "model": "bem",
+               "freewheel_rpm": [1000.0, 60000.0, 250.0], "freewheel_tol_rpm": 1.0},
     "output": {"dir": "results", "plots": True},
 }
 
@@ -132,8 +136,11 @@ def operating_points(cfg: dict) -> tuple[np.ndarray, np.ndarray]:
     """(U, Omega) arrays of equal length. Omega from Omega [rad/s], rpm, or tsr * U / R.
 
     Scalars broadcast against lists, so ``U_inf: 15, rpm: [1000, 2000]`` sweeps rotor speed.
+    ``rpm: freewheel`` has no fixed Omega; ``model.run`` solves for it instead.
     """
     op, R = cfg["operating"], cfg["rotor"]["R"]
+    if op["rpm"] == "freewheel":
+        raise ValueError("operating.rpm = freewheel: Omega is solved in model.run")
     U = np.atleast_1d(np.asarray(op["U_inf"], float))
     if op["tsr"] is not None:
         tsr = np.atleast_1d(np.asarray(op["tsr"], float))
@@ -164,11 +171,22 @@ def validate(cfg: dict) -> None:
     _need(op["U_inf"] is not None, "operating.U_inf is required")
     _need(sum(op[k] is not None for k in ("Omega", "rpm", "tsr")) == 1,
           "give exactly one of operating.Omega / rpm / tsr")
-    try:
-        U, Om = operating_points(cfg)
-    except ValueError as e:
-        raise ValueError("config: operating lists must have equal length (or be scalars)") from e
-    _need(bool(np.all(U > 0) and np.all(Om > 0)), "U_inf and Omega must be > 0")
+    sv = cfg["solver"]
+    _need(sv["model"] in ("bem", "blade_element"), "solver.model must be bem|blade_element")
+    if isinstance(op["rpm"], str):
+        _need(op["rpm"] == "freewheel", 'operating.rpm must be numbers or "freewheel"')
+        _need(bool(np.all(np.atleast_1d(np.asarray(op["U_inf"], float)) > 0)),
+              "U_inf must be > 0")
+        fw = sv["freewheel_rpm"]
+        _need(len(fw) == 3 and 0 < fw[0] < fw[1] and fw[2] > 0,
+              "solver.freewheel_rpm must be [min, max, step] with 0 < min < max, step > 0")
+        _need(sv["freewheel_tol_rpm"] > 0, "solver.freewheel_tol_rpm must be > 0")
+    else:
+        try:
+            U, Om = operating_points(cfg)
+        except ValueError as e:
+            raise ValueError("config: operating lists must have equal length (or be scalars)") from e
+        _need(bool(np.all(U > 0) and np.all(Om > 0)), "U_inf and Omega must be > 0")
 
     _need(s["model"] in ("solid", "shell", "user"), "structure.model must be solid|shell|user")
     if s["model"] == "shell":

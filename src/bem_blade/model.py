@@ -17,7 +17,7 @@ import numpy as np
 
 from . import naca
 from .aero import FallbackPolar, load_polar_table
-from .bem import Rotor, rotor_totals, solve_stations
+from .bem import Rotor, blade_element_stations, rotor_totals, solve_stations
 from .section import SectionProps, airfoil_sections, user_sections
 from .structure import G, bending_stress, curvatures, deflection, integrate_from_tip, \
     shear_and_moment
@@ -31,6 +31,11 @@ LIMITATIONS = [
     "Not evaluated: shell buckling, shear stress, torsion from pitching moment.",
     "No 3D/rotational stall augmentation or dynamic stall.",
 ]
+BLADE_ELEMENT_LIMITATION = (
+    "Blade-element model (solver.model = blade_element): no induction (a = a' = 0) and no "
+    "tip/hub loss, so each section sees the undisturbed free stream. This overpredicts the angle "
+    "of attack, the loads and C_P (which can exceed the Betz limit).")
+MODELS = ("bem", "blade_element")
 
 
 class Geometry(NamedTuple):
@@ -54,6 +59,7 @@ class Blade:
     polar: object
     include_gravity: bool
     include_centrifugal: bool
+    model: str                       # "bem" | "blade_element"
     x_over_c: np.ndarray | None      # per contour point (None for user sections)
     is_upper: np.ndarray | None
     warnings: list[str] = field(default_factory=list)
@@ -66,8 +72,17 @@ def build_blade(cfg: dict) -> Blade:
     c = np.asarray(st["chord"], float)
     theta = np.deg2rad(np.asarray(st["theta_deg"], float) + rot["pitch_deg"])
     R, r_hub = float(rot["R"]), float(rot["r_hub"])
+    model = cfg["solver"]["model"]
 
-    r_ext = np.r_[r, R] if r[-1] < R else r
+    if model == "blade_element":
+        # Loads at every given station, trapezoid over those stations only (write-up §4).
+        r_ext = r
+        if r[-1] < R:
+            warnings.append(f"r[-1] = {r[-1]:g} m < R = {R:g} m: blade-element model integrates "
+                            "over the given stations only, so the load between r[-1] and R is "
+                            "ignored.")
+    else:
+        r_ext = np.r_[r, R] if r[-1] < R else r
     if r[0] > r_hub:
         warnings.append(f"r[0] = {r[0]:g} m > r_hub = {r_hub:g} m: moments at r[0] are not the "
                         "true root moment (load between hub and r[0] is ignored).")
@@ -123,7 +138,7 @@ def build_blade(cfg: dict) -> Blade:
     return Blade(geom, rotor, Material(float(m["E"]), density), polar,
                  bool(s["include_gravity"]) and density > 0,
                  bool(s["include_centrifugal"]) and density > 0,
-                 x_over_c, is_upper, warnings)
+                 model, x_over_c, is_upper, warnings)
 
 
 def _pad_tip(x, n_ext):
@@ -131,12 +146,13 @@ def _pad_tip(x, n_ext):
     return jnp.concatenate([x, jnp.zeros(n_ext - x.shape[0])])
 
 
-@partial(jax.jit, static_argnames=("gravity", "centrifugal"))
+@partial(jax.jit, static_argnames=("gravity", "centrifugal", "blade_element"))
 def evaluate(geom: Geometry, rotor: Rotor, mat: Material, polar, U, Omega, Re,
-             gravity: bool, centrifugal: bool):
+             gravity: bool, centrifugal: bool, blade_element: bool = False):
     """One operating point. Returns a flat dict of arrays (station axis first where relevant)."""
     n, n_ext = geom.r.shape[0], geom.r_ext.shape[0]
-    s = solve_stations(geom.r, geom.c, geom.theta, Re, U, Omega, rotor, polar)
+    stations = blade_element_stations if blade_element else solve_stations
+    s = stations(geom.r, geom.c, geom.theta, Re, U, Omega, rotor, polar)
     pN, pT = _pad_tip(s["pN"], n_ext), _pad_tip(s["pT"], n_ext)
     V_N, M_flap = shear_and_moment(pN, geom.r_ext)
     V_T, M_edge = shear_and_moment(pT, geom.r_ext)
@@ -174,7 +190,7 @@ def evaluate(geom: Geometry, rotor: Rotor, mat: Material, polar, U, Omega, Re,
     return out
 
 
-_evaluate_sweep = jax.vmap(evaluate, in_axes=(None, None, None, None, 0, 0, 0, None, None))
+_evaluate_sweep = jax.vmap(evaluate, in_axes=(None, None, None, None, 0, 0, 0, None, None, None))
 
 
 @dataclass
@@ -188,6 +204,7 @@ class Result:
     warnings: list[str]
     # structured per-operating-point flags: (kind, op_index, stations r [m]); text is in warnings
     flags: list[tuple[str, int, list[float]]] = field(default_factory=list)
+    freewheel: bool = False  # True when Omega is the solved freewheeling speed (Q = 0)
 
 
 def rpm(res: Result) -> np.ndarray:
@@ -206,31 +223,80 @@ def op_label(res: Result, i: int, file: bool = False) -> str:
     return ("_" if file else ", ").join(parts)
 
 
-def run(cfg: dict) -> Result:
-    """Run every operating point in ``cfg`` (vectorized), with the Reynolds outer loop (§5)."""
-    blade = build_blade(cfg)
-    U, Om = operating_points(cfg)
+def _solve(blade: Blade, U, Om, solver: dict):
+    """Evaluate every operating point (vectorized), with the Reynolds outer loop (§5).
+
+    Returns (out, Re, passes, converged). In blade-element mode W does not depend on the
+    solution, so the initial Re is already exact and one pass suffices."""
     g = blade.geom
+    U, Om = np.atleast_1d(np.asarray(U, float)), np.atleast_1d(np.asarray(Om, float))
     Re = (blade.rotor.rho * np.sqrt(U[:, None] ** 2 + (Om[:, None] * np.asarray(g.r)) ** 2)
           * np.asarray(g.c) / blade.rotor.mu)
-
-    tol, max_passes = cfg["solver"]["re_tol"], int(cfg["solver"]["re_max_passes"])
+    tol, max_passes = solver["re_tol"], int(solver["re_max_passes"])
     for k in range(1, max_passes + 1):
         out = _evaluate_sweep(g, blade.rotor, blade.material, blade.polar, jnp.asarray(U),
                               jnp.asarray(Om), jnp.asarray(Re), blade.include_gravity,
-                              blade.include_centrifugal)
+                              blade.include_centrifugal, blade.model == "blade_element")
         Re_new = np.asarray(out["Re_new"])
         change = np.max(np.abs(Re_new / Re - 1.0))
         if change < tol:
             break
         Re = Re_new
+    return out, Re, k, change < tol
+
+
+def rotor_torque(blade: Blade, U: float, Om, solver: dict) -> np.ndarray:
+    """Rotor shaft torque Q(Omega) [N m] at wind speed U for each Omega in ``Om``."""
+    Om = np.atleast_1d(np.asarray(Om, float))
+    out = _solve(blade, np.full_like(Om, U), Om, solver)[0]
+    return np.asarray(out["Q"])
+
+
+def freewheel_omega(blade: Blade, U: float, solver: dict) -> float:
+    """Freewheeling speed Omega_ss [rad/s]: the root of Q(Omega) = 0 (write-up §5).
+
+    Scans ``solver.freewheel_rpm`` = [min, max, step] for the last sign change of Q from + to -
+    (the rotor speeds up while Q > 0), then bisects that bracket to ``freewheel_tol_rpm``."""
+    lo_rpm, hi_rpm, step = (float(v) for v in solver["freewheel_rpm"])
+    to_om = 2 * np.pi / 60
+    grid = np.arange(lo_rpm, hi_rpm + 0.5 * step, step) * to_om
+    Q = rotor_torque(blade, U, grid, solver)
+    down = np.where((Q[:-1] > 0) & (Q[1:] <= 0))[0]
+    if down.size == 0:
+        raise ValueError(f"freewheel: Q(Omega) has no + to - sign change for U = {U:g} m/s in "
+                         f"{lo_rpm:g}-{hi_rpm:g} RPM; widen solver.freewheel_rpm.")
+    lo, hi = grid[down[-1]], grid[down[-1] + 1]
+    tol = float(solver["freewheel_tol_rpm"]) * to_om
+    while hi - lo > tol:
+        mid = 0.5 * (lo + hi)
+        if rotor_torque(blade, U, mid, solver)[0] > 0:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def run(cfg: dict) -> Result:
+    """Run every operating point in ``cfg`` (vectorized), with the Reynolds outer loop (§5).
+
+    With ``operating.rpm: freewheel`` the rotor speed at each U_inf is first solved from
+    Q(Omega) = 0, and the full model is then evaluated there."""
+    blade = build_blade(cfg)
+    freewheel = cfg["operating"]["rpm"] == "freewheel"
+    if freewheel:
+        U = np.atleast_1d(np.asarray(cfg["operating"]["U_inf"], float))
+        Om = np.array([freewheel_omega(blade, u, cfg["solver"]) for u in U])
+    else:
+        U, Om = operating_points(cfg)
+    out, Re, k, converged = _solve(blade, U, Om, cfg["solver"])
     out = jax.tree_util.tree_map(np.asarray, out)
     out["Re"] = Re
     warnings = list(blade.warnings)
-    if change >= tol:
-        warnings.append(f"Reynolds loop not converged after {max_passes} passes "
-                        f"(max change {change:.2%}).")
-    res = Result(cfg, blade, U, Om, out, k, warnings)
+    if blade.model == "blade_element":
+        warnings.append(BLADE_ELEMENT_LIMITATION)
+    if not converged:
+        warnings.append(f"Reynolds loop not converged after {k} passes.")
+    res = Result(cfg, blade, U, Om, out, k, warnings, freewheel=freewheel)
     res.warnings += _flags(res)
     return res
 
@@ -270,7 +336,12 @@ def _flags(res: Result) -> list[str]:
             add("extrapolated", i, ext, f"polar extrapolated (alpha or Re outside table) at r = "
                 f"{ext.round(3).tolist()}.")
         if out["CP"][i] >= 16 / 27:
-            add("betz", i, [], f"C_P = {out['CP'][i]:.3f} exceeds the Betz limit: check inputs.")
+            if blade.model == "blade_element":
+                add("betz_be", i, [], f"C_P = {out['CP'][i]:.3f} exceeds the Betz limit, as "
+                    "expected without induction (blade-element model).")
+            else:
+                add("betz", i, [], f"C_P = {out['CP'][i]:.3f} exceeds the Betz limit: check "
+                    "inputs.")
         tip = np.max(np.abs(out["delta_n"][i][:, -1]))
         if tip > 0.1 * blade.rotor.R:
             add("deflection", i, [], f"tip deflection {tip:.2f} m > 0.1 R: rigid-blade "

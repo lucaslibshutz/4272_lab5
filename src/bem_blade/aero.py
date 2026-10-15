@@ -99,11 +99,15 @@ jax.tree_util.register_dataclass(
     meta_fields=[])
 
 
-def load_polar_table(path: str | Path, d_alpha_deg: float = 0.1) -> tuple[PolarTable, list[str]]:
+def load_polar_table(path: str | Path, d_alpha_deg: float = 0.1,
+                     blend_deg: float = 10.0) -> tuple[PolarTable, list[str]]:
     """Read a CSV/whitespace table with columns ``Re, alpha_deg, Cl, Cd``.
 
     Returns the table and a list of warnings. Outside the tabulated alpha range each Re row is
-    extended with the flat-plate post-stall model of §4.3 (Cl = sin 2a, Cd = Cd_min + 2 sin^2 a).
+    extended with the flat-plate post-stall model of §4.3 (Cl = sin 2a, Cd = Cd_min + 2 sin^2 a),
+    reached by a linear blend from the row's last tabulated point over ``blend_deg``. The blend
+    keeps Cl, Cd continuous in alpha: tables that stop near stall (e.g. XFOIL from airfoiltools,
+    ~14-19 deg) would otherwise jump by ~60% in Cl at the edge.
     """
     path = Path(path)
     text = path.read_text()
@@ -124,10 +128,11 @@ def load_polar_table(path: str | Path, d_alpha_deg: float = 0.1) -> tuple[PolarT
         sel = re_col == re
         order = np.argsort(a_col[sel])
         a, cl, cd = a_col[sel][order], cl_col[sel][order], cd_col[sel][order]
-        inside = (grid_deg >= a[0]) & (grid_deg <= a[-1])
         cdmin = cd.min()
-        cl_rows.append(np.where(inside, np.interp(grid_deg, a, cl), np.sin(2 * grid)))
-        cd_rows.append(np.where(inside, np.interp(grid_deg, a, cd), cdmin + 2 * np.sin(grid) ** 2))
+        # weight of the flat-plate model: 0 inside the table, ramping to 1 over blend_deg outside
+        f = np.clip(np.maximum(a[0] - grid_deg, grid_deg - a[-1]) / blend_deg, 0.0, 1.0)
+        cl_rows.append((1 - f) * np.interp(grid_deg, a, cl) + f * np.sin(2 * grid))
+        cd_rows.append((1 - f) * np.interp(grid_deg, a, cd) + f * (cdmin + 2 * np.sin(grid) ** 2))
         lo.append(a[0])
         hi.append(a[-1])
     if min(lo) > -180.0 or max(hi) < 180.0:

@@ -1,5 +1,12 @@
 # Blade Root Bending & Stress from BEM — Theory and Implementation Spec
 
+> **Note (lab write-up).** §5's momentum/induction model (a, a′, Prandtl F, Buhl, Ning residual)
+> is `solver.model: bem`. The Lab 5 write-up (`../lab5_writeup`) and `examples/blade7.yaml` use
+> `solver.model: blade_element` instead. That is the lab handout's model: a = a′ = 0, F = 1,
+> loads at every station, the trapezoid rule over the given stations, and the freewheeling speed
+> from Q(Ω) = 0 (`operating.rpm: freewheel`). The rest of this spec (§1, §3–§4, §6–§7) applies
+> to both.
+
 Handoff spec for implementing a steady-state blade-element-momentum (BEM) solver that takes a NACA airfoil plus spanwise chord and section-angle arrays, computes aerodynamic loads, integrates them into spanwise bending moments, and returns the maximum bending moment and maximum normal stress for given material properties.
 
 All theory needed to implement is in here. Sign conventions are fixed in §1 and used consistently throughout; do not mix in conventions from other references without converting.

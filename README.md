@@ -5,13 +5,26 @@ Steady blade-element-momentum (BEM) analysis of a wind-turbine blade that goes a
 4-digit airfoil, spanwise chord/twist arrays and material properties. The theory and
 sign conventions are in [`PLAN.md`](PLAN.md); section numbers (§) below refer to it.
 
+Two aerodynamic models are available through `solver.model`:
+
+- **`bem`** (the default): blade element momentum theory with axial/tangential induction, Prandtl tip/hub
+  loss and the Buhl correction (PLAN.md §5).
+- **`blade_element`**: the lab handout's model, which Blade 7 uses. It has no induction and no
+  tip/hub loss: each section sees U_eff = (Ωr, U∞), φ = atan2(U∞, Ωr), and every station carries
+  load. The rotor torque comes from the trapezoid rule over the given stations. The theory is
+  derived in the lab write-up, [`../lab5_writeup`](../lab5_writeup) (§2–§5).
+
+Either model can solve for the **freewheeling speed** Ω_ss, the root of Q(Ω) = 0, with
+`operating.rpm: freewheel`.
+
 - **JAX throughout.** One jitted function runs the BEM solve, loads, moments, stress and
   deflection. It is `vmap`-ed over stations and over operating points, so a 21-point RPM sweep
   is a single compiled call per Reynolds pass. All of it runs in float64.
 - **Config-driven.** One YAML file holds everything, and any value can be overridden from the
   command line with `--set key.path=value`.
 - **Real-data ready.** Blade geometry can be read straight from a `.xlsx` or `.csv`. Polars can
-  come from a table (e.g. generated with NeuralFoil), or from the fallback model in §4.2–4.3.
+  come from a table (XFOIL polars from airfoiltools.com, or generated with NeuralFoil), or from the
+  fallback model in §4.2–4.3.
 
 ## Install
 
@@ -30,11 +43,23 @@ uv run bem-blade run examples/blade7.yaml
 
 This analyses the 3-bladed, 7 in (0.1778 m) SLA-printed Blade 7 rotor:
 
-- **Airfoil:** NACA 4412, with NeuralFoil polars.
+- **Airfoil:** NACA 4412, with XFOIL polars from airfoiltools.com (Ncrit 9, Re 5×10⁴–10⁶), as in
+  the lab handout.
 - **Material:** Formlabs Grey Resin V4.1, post-cured.
-- **Operating points:** U∞ = 15 m/s, swept over 1000–6000 RPM.
+- **Model:** blade-element theory as in the lab handout (`solver.model: blade_element`).
+- **Operating point:** U∞ = 15 m/s at the freewheeling speed (`operating.rpm: freewheel`),
+  which comes out at Ω_ss ≈ 17,574 RPM. Loads, moments and stresses are evaluated there.
 
 Results go to `results/blade7/`.
+
+The lab handout's method is also implemented independently of the package, in
+`scripts/handout_method.py`. It prints the write-up §4 table: Q at 3600 RPM and Ω_ss for the
+left, trapezoid, midpoint and right rules. It also prints the hub/tip state at Ω_ss and how
+sensitive Ω_ss is to the post-stall blend width:
+
+```bash
+uv run python scripts/handout_method.py            # --blend DEG, --U, --rpm, --polar CSV
+```
 
 Other examples:
 
@@ -46,8 +71,13 @@ uv run bem-blade run examples/sweep_40m.yaml   # same blade, U_inf sweep at cons
 ### Common tweaks without editing files
 
 ```bash
-# single rotor speed
+# single rotor speed, or an RPM sweep, instead of the freewheeling speed
 uv run bem-blade run examples/blade7.yaml --set operating.rpm=3600
+uv run bem-blade run examples/blade7.yaml --set "operating.rpm=[1000,2000,3000,3600]"
+# freewheeling speed at several tunnel speeds
+uv run bem-blade run examples/blade7.yaml --set "operating.U_inf=[10,15]"
+# momentum (BEM) model instead of the handout's blade-element model
+uv run bem-blade run examples/blade7.yaml --set solver.model=bem
 # different tunnel speed and a coarser sweep
 uv run bem-blade run examples/blade7.yaml --set operating.U_inf=10 --set "operating.rpm=[1500,2500,3500]"
 # constant TSR instead of RPM (exactly one of Omega / rpm / tsr may be set)
@@ -74,6 +104,15 @@ stations:
 Remember to set `rotor.R` (tip radius) and `rotor.r_hub`.
 
 ### New polar table
+
+The Blade 7 table comes from airfoiltools.com. To re-download it (raw CSVs are kept in
+`data/airfoiltools/`):
+
+```bash
+uv run python scripts/fetch_airfoiltools.py   # -> data/naca4412_airfoiltools.csv
+```
+
+Or generate one with NeuralFoil (the earlier Blade 7 polar, still in `data/`):
 
 ```bash
 uv run bem-blade polar 4412 --re 5e3 1e4 2e4 5e4 1e5 2e5 3e5 --alpha -20 25 0.5 -o data/naca4412_neuralfoil.csv
@@ -151,7 +190,11 @@ stall flag, aero-model flag and BEM bracket region.
 | 2 | propeller brake |
 | 3 | φ > 90° |
 | 0 | no bracket found; loads set to 0 and a warning is raised |
-| −1 | station at r_hub or R, where F = 0, so no load by construction |
+| −1 | station at r_hub or R, where F = 0, so no load by construction (`bem` only) |
+
+In `blade_element` mode every station is region 1, with a = a′ = 0 and F = 1. When
+`operating.rpm` is `freewheel`, `summary.json` also gets a `freewheel` list of
+`{U_inf, Omega_ss, rpm_ss}`.
 
 ## Python API
 
@@ -173,7 +216,8 @@ on their own:
 |---|---|
 | `bem_blade.naca` | geometry, α_L0 |
 | `bem_blade.aero` | `FallbackPolar`, `PolarTable` (JAX pytrees with `.cl_cd(alpha, Re)`) |
-| `bem_blade.bem` | `solve_stations`, `rotor_totals` |
+| `bem_blade.bem` | `solve_stations` (BEM), `blade_element_stations`, `trapezoid_weights`, `rotor_totals` |
+| `bem_blade.model` | `run`, `rotor_torque(blade, U, Omega)`, `freewheel_omega(blade, U, solver)` |
 | `bem_blade.section` | polygon/shell properties |
 | `bem_blade.structure` | moments, stress, deflection |
 
@@ -198,19 +242,19 @@ on their own:
 
 ## Blade 7 data provenance and assumptions
 
-- **Geometry:** `data/Blade7_geometry.xlsx`. It is exactly a Betz optimum,
-  φ = atan(2/(3λ_r)), for TSR 4.469, design α 6.75° and B·C_l = 3.43. The twist and chord
-  residuals are 1e-13.
+- **Geometry:** `data/Blade7_geometry.xlsx`, as given for the lab: 20 stations from the hub
+  joint (r = 25.4 mm) to the tip (r = 177.8 mm).
 - **Material:** Formlabs Grey Resin V4.1 TDS (25011042-TDS-ENUS), post-cured 30 min at 60 °C.
   E = 2.201 GPa and UTS = 47 MPa (ASTM D638-14).
 - **Not on the TDS (assumed):**
   - compressive allowable = 47 MPa (taken equal to UTS; conservative for SLA resins);
   - density = 1180 kg/m³ (typical cured SLA resin);
   - flexural strength (90 MPa) is *not* used, because it is a modulus of rupture.
-- **Low-Re aerodynamics:** Re at 15 m/s is about 2×10⁴ to 1×10⁵. NeuralFoil predicts a strong
-  low-Re lift loss there; for example, at Re = 5×10⁴ and α = 6.75°, C_l ≈ 0.71 against the
-  design's 1.14. At low RPM much of the blade is stalled, beyond the ±25° table, and those
-  stations are flagged. NeuralFoil's own confidence drops above about 18°.
+- **Low-Re aerodynamics:** Re at 15 m/s is about 2×10⁴ to 1×10⁵. The airfoiltools XFOIL polars
+  start at Re = 5×10⁴ (lower Re is clamped to that row) and only cover about −9° to +14°…19°,
+  depending on Re. Outside that range each row is blended linearly over 10° into the flat-plate
+  post-stall model (§4.3), and those stations are flagged as extrapolated. At low RPM much of the
+  blade is stalled and lands in that blended region.
 
 ## Tests
 
@@ -228,6 +272,13 @@ The suite covers every check in §11, plus a few more:
 - **BEM:** σ′ → 0 gives geometric inflow; momentum balance B·p_N = 4πrρU²a(1−a)F to 1e-6;
   C_P < 16/27 on random blades; the brentq cross-check; unit scaling (C_T, C_P invariant,
   moments ×8); sweep == individual runs.
+- **Blade element** (`tests/test_blade_element.py`, the write-up's model):
+  - a = a′ = 0, F = 1 and φ = atan2(U∞, Ωr), with every station loaded;
+  - [p_T; p_N] = M(φ)[L′; D′], and the magnitude is preserved;
+  - p_T > 0 ⇔ C_L/C_D > Ωr/U∞;
+  - the trapezoid weights sum to R − r_hub;
+  - Q(Ω_ss) ≈ 0, with a + to − crossing;
+  - Ω_ss matches `scripts/handout_method.py` to within 2 RPM.
 - **Config:** I/O tests.
 
 ## Limitations
@@ -240,3 +291,5 @@ These are reported in `summary.json` and are not silently ignored:
 - No 3D/rotational stall augmentation or dynamic stall.
 - The shell model is a uniform thin wall (real blades carry bending in spar caps).
 - Sweeps use a fixed θ with no control model.
+- `blade_element` has no induction, so it overpredicts α, the loads and C_P (C_P can exceed the
+  Betz limit). The freewheeling speed neglects bearing and generator torque.

@@ -99,6 +99,24 @@ def solve_station(r, c, theta, Re, U, Omega, rotor: Rotor, polar):
     return s
 
 
+def blade_element_stations(r, c, theta, Re, U, Omega, rotor: Rotor, polar):
+    """Blade-element model of the lab handout: no induction (a = a' = 0) and no tip/hub loss
+    (F = 1), so the inflow is the geometric one, phi = atan2(U, Omega r), with W = |(Omega r, U)|.
+    Every station carries load, hub and tip included. Same output keys as ``solve_stations``."""
+    phi = jnp.arctan2(U, Omega * r)
+    alpha = phi - theta
+    cl, cd = polar.cl_cd(alpha, Re)
+    sphi, cphi = jnp.sin(phi), jnp.cos(phi)
+    zero, one = jnp.zeros_like(r), jnp.ones_like(r)
+    W = jnp.hypot(U, Omega * r)
+    q = 0.5 * rotor.rho * W**2
+    cn = cl * cphi + cd * sphi
+    ct = cl * sphi - cd * cphi
+    return dict(phi=phi, alpha=alpha, cl=cl, cd=cd, cn=cn, ct=ct, F=one, a=zero, ap=zero,
+                res=zero, W=W, region=jnp.ones(r.shape, int), pN=q * c * cn, pT=q * c * ct,
+                Re_new=rotor.rho * W * c / rotor.mu)
+
+
 def solve_stations(r, c, theta, Re, U, Omega, rotor: Rotor, polar):
     """vmap over stations. Stations at r <= r_hub or r >= R (F = 0) carry zero load."""
     active = (r > rotor.r_hub * (1 + 1e-9)) & (r < rotor.R * (1 - 1e-9))
@@ -126,10 +144,18 @@ def solve_stations(r, c, theta, Re, U, Omega, rotor: Rotor, polar):
     return s
 
 
+def trapezoid_weights(r):
+    """Weights w with  int f dr ~= w^T f  over the stations r (write-up eq. weights): each
+    station gets half the width of each section it bounds, so the end stations get dr/2."""
+    dr = jnp.diff(r)
+    return jnp.concatenate([dr, jnp.zeros(1)]) / 2 + jnp.concatenate([jnp.zeros(1), dr]) / 2
+
+
 def rotor_totals(r_ext, pN_ext, pT_ext, U, Omega, rotor: Rotor):
     """Thrust, torque, power, C_T, C_P from per-blade loads on the tip-extended grid."""
-    T = rotor.B * jnp.trapezoid(pN_ext, r_ext)
-    Q = rotor.B * jnp.trapezoid(pT_ext * r_ext, r_ext)
+    w = trapezoid_weights(r_ext)
+    T = rotor.B * w @ pN_ext
+    Q = rotor.B * w @ (pT_ext * r_ext)
     P = Q * Omega
     area = jnp.pi * rotor.R**2
     return dict(T=T, Q=Q, P=P,

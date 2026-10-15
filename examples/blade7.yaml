@@ -1,15 +1,16 @@
-# Blade 7 — 3-bladed, 7 in (0.1778 m) SLA-printed rotor, NACA 4412, U_inf = 15 m/s,
-# swept over rotor speed. Run:  uv run bem-blade run examples/blade7.yaml
+# Blade 7 — 3-bladed, 7 in (0.1778 m) SLA-printed rotor, NACA 4412, U_inf = 15 m/s, at its
+# freewheeling speed. Run:  uv run bem-blade run examples/blade7.yaml
 #
+# Model: the lab handout's blade-element theory (solver.model = blade_element), as derived in
+#   ../lab5_writeup: no induction or tip/hub loss, loads at all 20 stations, trapezoid rule,
+#   Omega_ss from Q(Omega) = 0. Use --set solver.model=bem for the momentum (BEM) model.
 # Geometry: data/Blade7_geometry.xlsx (r [m], pitch [deg], chord [m]). Its "pitch" convention
 #   (positive = leading edge upstream of the rotor plane) is PLAN.md §1's theta, used as-is.
-#   The geometry is exactly a Betz optimum (phi = atan(2/(3 lambda_r))) for TSR 4.469,
-#   design alpha 6.75 deg, B*Cl = 3.43 (=> Cl_design 1.14 for B = 3).
 # Material: Formlabs Grey Resin V4.1 TDS (25011042-TDS-ENUS), post-cured 30 min @ 60 C.
 
 airfoil:
   naca: "4412"
-  polar_file: ../data/naca4412_neuralfoil.csv   # `bem-blade polar 4412 --re ...` (NeuralFoil)
+  polar_file: ../data/naca4412_airfoiltools.csv # XFOIL, Ncrit 9 (scripts/fetch_airfoiltools.py)
   alpha_stall_deg: 12.0                         # used only for the stall flag with a table
 
 rotor:
@@ -23,9 +24,10 @@ stations:
 
 operating:
   U_inf: 15.0
-  rpm: [1000, 1250, 1500, 1750, 2000, 2250, 2500, 2750, 3000, 3250, 3500, 3750,
-        4000, 4250, 4500, 4750, 5000, 5250, 5500, 5750, 6000]
-  # design point: TSR 4.469 -> 3600 RPM at 15 m/s
+  rpm: freewheel     # solve Q(Omega) = 0; or a list, e.g. --set "operating.rpm=[1000,2000,3600]"
+
+solver:
+  model: blade_element
 
 air:
   rho: 1.225
