@@ -20,6 +20,8 @@ There's no manual venv activation: prefix commands with `uv run`.
 | NeuralFoil polars (alternative) | `uv run bem-blade polar 4412 --re 5e3 1e4 ... -o data/naca4412_neuralfoil.csv` |
 | tests | `uv run pytest` (~8 s) |
 | standalone submission script (every number in the write-up, no package install) | `cd submission && uv run lab5_blade7.py` |
+| design sweep: max power / min material blade → Fusion CSV (CPU) | `cd submission && uv run blade_optimize.py` |
+| same, on an NVIDIA GPU (CUDA 12) | `cd submission && uv run --with "jax[cuda12]" blade_optimize.py` |
 
 Outputs are written to `output.dir` (default `results/<name>/`), which is git-ignored.
 
@@ -54,3 +56,10 @@ Outputs are written to `output.dir` (default `results/<name>/`), which is git-ig
   itself). It needs `naca4412_airfoiltools.csv` next to it; Blade 7 geometry is embedded. Its
   right-rule Omega_ss is 18,324 RPM vs 18,323 from `scripts/handout_method.py` (bisection to 1 RPM
   vs brentq).
+- **Design sweep.** `submission/blade_optimize.py` imports `lab5_blade7.py` (same folder) and writes
+  `blade_parameters_optimized.csv` (Fusion parameter table: `c` chord in mm, unitless because it
+  scales the 1 mm airfoil sketch; `q = c/4`; `p` pitch; `z` from the hub face), plus
+  `blade_sweep_results.csv` and `blade_sweep_pareto.png`, next to the script. It uses BEM, not
+  blade element: without induction, power grows with chord forever. The run is float64
+  (`jax_enable_x64` in `lab5_blade7.py`). Consumer GPUs (e.g. RTX 4090) do FP64 at 1/64 of the
+  FP32 rate, so a GPU helps less than you'd expect.
